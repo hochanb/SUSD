@@ -66,8 +66,8 @@ else:
 # args = SUSDParticle()
 # args = SUSDHalfCheetahConfig()
 # args = SUSDGunner()
-args = SUSDEldenKitchen()
-# args = SUSDAntConfig()
+# args = SUSDEldenKitchen()
+args = SUSDAntConfig()
 
 
 @wrap_experiment(log_dir=get_log_dir(args), name=get_exp_name(args)[0])

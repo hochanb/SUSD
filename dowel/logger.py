@@ -173,7 +173,10 @@ class LogOutput(abc.ABC):
 
     def __del__(self):
         """Clean up object upon deletion."""
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class Logger:

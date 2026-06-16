@@ -327,10 +327,10 @@ class IOD(RLAlgorithm):
 
     def _gradient_descent(self, losses, optimizer_keys):
         if isinstance(optimizer_keys, list) and any(k.startswith("traj_encoder_") or k.startswith("qf_") for k in optimizer_keys):
-            for loss, optimizer_key in zip(losses, optimizer_keys):
-                self._optimizer.zero_grad(keys=[optimizer_key])
-                loss.backward(retain_graph=True) 
-                self._optimizer.step(keys=[optimizer_key])
+            self._optimizer.zero_grad(keys=optimizer_keys)
+            total_loss = sum(losses)
+            total_loss.backward()
+            self._optimizer.step(keys=optimizer_keys)
         else:
             self._optimizer.zero_grad(keys=optimizer_keys)
             losses.backward()

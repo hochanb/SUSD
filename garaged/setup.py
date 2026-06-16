@@ -16,7 +16,7 @@ REQUIRED = [
     'cma==2.7.0',
     #'dowel==0.0.3',
     'gym[atari,box2d,classic_control]' + GYM_VERSION,
-    'joblib<0.13,>=0.12',
+    'joblib<2,>=1.1.1',
     'numpy>=1.14.5',
     'psutil',
     'python-dateutil',

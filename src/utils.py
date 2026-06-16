@@ -11,25 +11,10 @@ from garagei.torch.modules.parameter_module import ParameterModule
 from torchvision import transforms
 import torch
 
-from slot_attention.data import CLEVRDataModule
-from slot_attention.model import SlotAttentionModel
-from slot_attention.params import SlotAttentionParams
-from slot_attention.method import SlotAttentionMethod
-from slot_attention.utils import rescale
-
 
 from garage.experiment.experiment import get_metadata
 from garagei.envs.consistent_normalized_env import consistent_normalize
 from iod.utils import get_normalizer_preset
-from envs.moma_2d.moma_2d_gym_env import MoMa2DGymEnv
-
-
-from pettingzoo.mpe import simple_heterogenous_v3
-from pettingzoo.utils.wrappers.centralized_wrapper import (CentralizedWrapper,
-                                                               DownstreamCentralizedWrapper,
-                                                               SequentialDSWrapper)
-from envs.mp.particle import Particle
-
 import global_context
 
 EXP_DIR = 'exp'
@@ -155,6 +140,10 @@ def make_env(args, max_path_length):
         env = FetchEnvironment(base_env, custom_order=custom_order)
 
     elif args.env == "particle":     
+        from pettingzoo.mpe import simple_heterogenous_v3
+        from pettingzoo.utils.wrappers.centralized_wrapper import CentralizedWrapper
+        from envs.mp.particle import Particle
+
         if args.use_image:
             image_encoder = load_img_encoder('cuda')
         else:
@@ -197,6 +186,8 @@ def make_env(args, max_path_length):
         # custom_order = [0, 1, 2, 3,
         #                 4, 5, 6, 7,
         #                 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] # base, arm, view (ORIGINAL)
+
+        from envs.moma_2d.moma_2d_gym_env import MoMa2DGymEnv
 
         env = MoMa2DGymEnv(max_step=1000, custom_order=custom_order)
         env.reset()
@@ -251,6 +242,12 @@ def make_q_function(input_dim, action_dim, master_dims, nonlinearity, alpha):
 
 
 def load_model():
+    from slot_attention.data import CLEVRDataModule
+    from slot_attention.model import SlotAttentionModel
+    from slot_attention.params import SlotAttentionParams
+    from slot_attention.method import SlotAttentionMethod
+    from slot_attention.utils import rescale
+
     ckpt_path = "slot_attention/slot_attention-epoch=99.ckpt"
     params = SlotAttentionParams()
 
@@ -294,6 +291,9 @@ def load_model():
 
 
 def get_image_embeddings(img, method):
+    from slot_attention.params import SlotAttentionParams
+    from slot_attention.utils import rescale
+
     params = SlotAttentionParams()
     clevr_transform = transforms.Compose(
             [

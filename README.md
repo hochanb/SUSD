@@ -21,6 +21,20 @@ conda activate dsd
 pip install -r requirements.txt --no-deps
 pip install -e .
 pip install -e garaged
+# In case of C++ error:
+# conda install -c conda-forge swig
 cd envs/Pettingzoo-skill
 pip install -e .
+```
+
+Additional Installation
+```
+pip install slot_attention patchelf
+```
+
+Mujoco
+```
+tar -xzf /tmp/mujoco210-linux-x86_64.tar.gz -C ~/.mujoco
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/.mujoco/mujoco210/bin
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
 ```
