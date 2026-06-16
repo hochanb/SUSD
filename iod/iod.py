@@ -1,4 +1,6 @@
 from collections import defaultdict, deque
+import os
+import time
 
 import numpy as np
 import torch
@@ -204,6 +206,19 @@ class IOD(RLAlgorithm):
     # Execute the main training loop over multiple epochs, including evaluation, sampling, and model updates.
     def train(self, runner):
         last_return = None
+        progress_enabled = os.environ.get("SUSD_SHOW_PROGRESS", "1") != "0"
+        progress_period = max(1, int(os.environ.get("SUSD_PROGRESS_PERIOD", "1")))
+        n_epochs = int(os.environ.get("GARAGE_EXAMPLE_TEST_N_EPOCHS", runner._train_args.n_epochs))
+        progress_start_time = time.time()
+        progress_method = os.environ.get("SUSD_TRAIN_METHOD", self.algo)
+
+        def _format_duration(seconds):
+            seconds = max(0, int(seconds))
+            hours, rem = divmod(seconds, 3600)
+            minutes, seconds = divmod(rem, 60)
+            if hours:
+                return f"{hours:d}h {minutes:02d}m {seconds:02d}s"
+            return f"{minutes:02d}m {seconds:02d}s"
 
         with global_context.GlobalContext({'phase': 'train', 'policy': 'sampling'}):
             for _ in runner.step_epochs(
@@ -236,6 +251,26 @@ class IOD(RLAlgorithm):
                         extra_scalar_metrics={
                             'TimeSampling': time_sampling[0],
                         },
+                    )
+
+                if progress_enabled and (
+                        runner.step_itr == 0
+                        or (runner.step_itr + 1) % progress_period == 0
+                        or (runner.step_itr + 1) >= n_epochs):
+                    completed = runner.step_itr + 1
+                    elapsed = time.time() - progress_start_time
+                    avg_epoch_time = elapsed / max(1, completed)
+                    remaining_epochs = max(0, n_epochs - completed)
+                    eta = avg_epoch_time * remaining_epochs
+                    percent = 100.0 * completed / max(1, n_epochs)
+                    print(
+                        "[progress] "
+                        f"{self.env_name}/{progress_method} "
+                        f"epoch {completed}/{n_epochs} ({percent:.1f}%) "
+                        f"elapsed={_format_duration(elapsed)} "
+                        f"eta={_format_duration(eta)} "
+                        f"avg_epoch={avg_epoch_time:.2f}s",
+                        flush=True,
                     )
 
                 runner.step_itr += 1

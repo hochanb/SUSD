@@ -14,8 +14,8 @@ import platform
 import torch.multiprocessing as mp
 import torch.nn as nn
 
-from dotenv import load_dotenv
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 wandb_api_key = os.getenv('WANDB_API_KEY')
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
@@ -49,6 +49,7 @@ from garagei.torch.q_functions.continuous_mlp_q_function_ex import ContinuousMLP
 from garagei.torch.optimizers.optimizer_group_wrapper import OptimizerGroupWrapper
 from garagei.torch.utils import xavier_normal_ex
 from iod.susd import SUSD
+from iod.metra import METRA
 from iod.dads import DADS
 
 from src.utils import get_exp_name, get_log_dir, make_env, make_q_function
@@ -68,6 +69,49 @@ else:
 # args = SUSDGunner()
 # args = SUSDEldenKitchen()
 args = SUSDAntConfig()
+
+
+def _env_override(name, current, cast=str):
+    value = os.environ.get(name)
+    if value is None or value == '':
+        return current
+    return cast(value)
+
+
+def _apply_ant_pretrain_env_overrides(args):
+    method = os.environ.get('SUSD_TRAIN_METHOD', 'susd').lower()
+    if method not in ['susd', 'metra']:
+        raise NotImplementedError(
+            f"SUSD_TRAIN_METHOD={method!r} is not implemented in src/pretrain.py. "
+            "This checkout currently supports Ant pretraining for 'susd' and 'metra'."
+        )
+
+    args.train_method = method
+    if method == 'metra':
+        args.run_group = os.environ.get('SUSD_RUN_GROUP', 'METRA_ANT')
+        args.algo = 'metra'
+        args.susd_ablation_mode = 0
+    else:
+        args.run_group = os.environ.get('SUSD_RUN_GROUP', args.run_group)
+
+    args.seed = _env_override('SUSD_SEED', args.seed, int)
+    args.n_epochs = _env_override('SUSD_N_EPOCHS', args.n_epochs, int)
+    args.n_parallel = _env_override('SUSD_N_PARALLEL', args.n_parallel, int)
+    args.traj_batch_size = _env_override('SUSD_TRAJ_BATCH_SIZE', args.traj_batch_size, int)
+    args.trans_optimization_epochs = _env_override('SUSD_TRANS_OPTIMIZATION_EPOCHS', args.trans_optimization_epochs, int)
+    args.n_epochs_per_eval = _env_override('SUSD_N_EPOCHS_PER_EVAL', args.n_epochs_per_eval, int)
+    args.n_epochs_per_log = _env_override('SUSD_N_EPOCHS_PER_LOG', args.n_epochs_per_log, int)
+    args.n_epochs_per_save = _env_override('SUSD_N_EPOCHS_PER_SAVE', args.n_epochs_per_save, int)
+    args.n_epochs_per_pt_save = _env_override('SUSD_N_EPOCHS_PER_PT_SAVE', args.n_epochs_per_pt_save, int)
+    args.n_epochs_per_pkl_update = _env_override('SUSD_N_EPOCHS_PER_PKL_UPDATE', args.n_epochs_per_pkl_update, int)
+    args.eval_record_video = _env_override('SUSD_EVAL_RECORD_VIDEO', args.eval_record_video, int)
+    args.use_gpu = _env_override('SUSD_USE_GPU', args.use_gpu, int)
+    args.sample_cpu = _env_override('SUSD_SAMPLE_CPU', args.sample_cpu, int)
+    args.use_wandb = bool(_env_override('SUSD_USE_WANDB', int(args.use_wandb), int))
+    return args
+
+
+args = _apply_ant_pretrain_env_overrides(args)
 
 
 @wrap_experiment(log_dir=get_log_dir(args), name=get_exp_name(args)[0])
@@ -159,6 +203,8 @@ def run(ctxt=None):
 
     
     partition_points = factorize_environment(args)
+    if getattr(args, 'train_method', 'susd') == 'metra':
+        partition_points = [0, obs_dim]
     args.N = len(partition_points) - 1
     dowel.logger.log(f'observation space: {obs_dim}, action space: {action_dim}, partition_points: {partition_points},  #factors: {args.N}')
 
@@ -187,7 +233,8 @@ def run(ctxt=None):
         init_std=1.,
     ))
 
-    policy_q_input_dim = module_obs_dim + args.dim_option * args.N  
+    option_dim_for_policy = args.dim_option if getattr(args, 'train_method', 'susd') == 'metra' else args.dim_option * args.N
+    policy_q_input_dim = module_obs_dim + option_dim_for_policy  
     policy_module = module_cls(
         input_dim=policy_q_input_dim,
         output_dim=action_dim,
@@ -201,8 +248,17 @@ def run(ctxt=None):
     option_policy = PolicyEx(**policy_kwargs) #  π(a∣s,z), O + Nd -> A
 
     output_dim = args.dim_option
-    
-    if args.susd_input_factor0:
+
+    if getattr(args, 'train_method', 'susd') == 'metra':
+        te_module_cls, te_module_kwargs = module_cls_factory(
+            args=args,
+            master_dims=master_dims,
+            nonlinearity=nonlinearity,
+            input_dim=module_obs_dim,
+            output_dim=output_dim,
+        )
+        traj_encoder = te_module_cls(**te_module_kwargs)
+    elif args.susd_input_factor0:
         traj_encoder = PartitionedTrajectoryEncoderWithInputFactor0(
             args=args,
             partition_points=partition_points,
@@ -287,9 +343,14 @@ def run(ctxt=None):
     optimizers['dual_lam'] = torch.optim.Adam([{'params': dual_lam.parameters(), 'lr': _finalize_lr(args.dual_lr)}])
 
 
-    for i, encoder in enumerate(traj_encoder.encoders):
-        optimizers[f'traj_encoder_{i}'] = torch.optim.Adam(
-            encoder.parameters(), lr=_finalize_lr(args.lr_te)
+    if hasattr(traj_encoder, 'encoders'):
+        for i, encoder in enumerate(traj_encoder.encoders):
+            optimizers[f'traj_encoder_{i}'] = torch.optim.Adam(
+                encoder.parameters(), lr=_finalize_lr(args.lr_te)
+            )
+    else:
+        optimizers['traj_encoder'] = torch.optim.Adam(
+            traj_encoder.parameters(), lr=_finalize_lr(args.lr_te)
         )
 
 
@@ -426,7 +487,29 @@ def run(ctxt=None):
         susd_ablation_mode = args.susd_ablation_mode
     )
 
-    if args.algo == 'metra':
+    if getattr(args, 'train_method', 'susd') == 'metra':
+        metra_common_args = dict(
+            qf1=qf1,
+            qf2=qf2,
+            log_alpha=log_alpha,
+            tau=args.sac_tau,
+            scale_reward=args.sac_scale_reward,
+            target_coef=args.sac_target_coef,
+            replay_buffer=replay_buffer,
+            min_buffer_size=args.sac_min_buffer_size,
+            inner=args.inner,
+            num_alt_samples=args.num_alt_samples,
+            split_group=args.split_group,
+            dual_reg=args.dual_reg,
+            dual_slack=args.dual_slack,
+            dual_dist=args.dual_dist,
+            pixel_shape=pixel_shape,
+        )
+        algo = METRA(
+            **algo_kwargs,
+            **metra_common_args,
+        )
+    elif args.algo == 'metra':
         algo = SUSD(
             **algo_kwargs,
             **skill_common_args,
@@ -456,6 +539,8 @@ def run(ctxt=None):
 
     algo.option_policy.to(device)
     runner.train(n_epochs=args.n_epochs, batch_size=args.traj_batch_size)
+    if os.environ.get("SUSD_SAVE_FINAL", "1") != "0":
+        runner.save(args.n_epochs, new_save=True, pt_save=True, pkl_update=False)
 
 
 if __name__ == '__main__':

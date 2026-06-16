@@ -142,9 +142,10 @@ class OptionLocalRunner(LocalRunner):
                     'N': getattr(self._algo, 'N', 1),
                     'dist_predictor': self._algo.dist_predictor,
                 }, file_name)
-                file_name = os.path.join(self._snapshotter._snapshot_dir, f'csd_logs.npy')
-                np.save(file_name, np.array(self._algo.csd_logs, dtype=object))
-                logger.log(f"Saved CSD logs to {file_name}")
+                if hasattr(self._algo, "csd_logs"):
+                    file_name = os.path.join(self._snapshotter._snapshot_dir, f'csd_logs.npy')
+                    np.save(file_name, np.array(self._algo.csd_logs, dtype=object))
+                    logger.log(f"Saved CSD logs to {file_name}")
 
         if pt_save and epoch != 0:
             file_name = os.path.join(self._snapshotter._snapshot_dir, f'option_policy{epoch}.pt')

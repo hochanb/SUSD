@@ -122,7 +122,7 @@ class METRA(IOD):
             data[key] = torch.from_numpy(value).float().to(self.device)
         return data
 
-    def _train_once_inner(self, path_data):
+    def _train_once_inner(self, path_data, runner=None):
         self._update_replay_buffer(path_data)
 
         epoch_data = self._flatten_data(path_data)
@@ -374,7 +374,7 @@ class METRA(IOD):
             )
 
         data = self.process_samples(random_trajectories)
-        last_obs = torch.stack([torch.from_numpy(ob[-1]).to(self.device) for ob in data['obs']])
+        last_obs = torch.stack([torch.from_numpy(ob[-1]).to(dtype=torch.float32, device=self.device) for ob in data['obs']])
         option_dists = self.traj_encoder(last_obs)
 
         option_means = option_dists.mean.detach().cpu().numpy()
