@@ -28,6 +28,7 @@ def parse_args():
     )
     parser.add_argument("--methods", nargs="+", default=DEFAULT_METHODS)
     parser.add_argument("--checkpoint-root", default="final_models/ant")
+    parser.add_argument("--checkpoint-epoch", default="latest")
     parser.add_argument(
         "--checkpoint",
         action="append",
@@ -56,8 +57,33 @@ def load_policy(path, device):
     return policy.to(device).eval()
 
 
-def default_checkpoint_path(root, method):
-    return Path(root) / method.upper() / "option_policy10000.pt"
+def extract_epoch(path, kind):
+    suffix = path.stem.replace(kind, "", 1)
+    return int(suffix) if suffix.isdigit() else -1
+
+
+def checkpoint_candidates(root, method, seed, epoch, kind="option_policy"):
+    method_dir = Path(root) / method.upper()
+    if epoch == "latest":
+        patterns = [
+            method_dir / f"seed_{seed}" / f"{kind}*.pt",
+            method_dir / f"{kind}*.pt",
+        ]
+    else:
+        patterns = [
+            method_dir / f"seed_{seed}" / f"{kind}{epoch}.pt",
+            method_dir / f"{kind}{epoch}.pt",
+        ]
+
+    candidates = []
+    for pattern in patterns:
+        candidates.extend(pattern.parent.glob(pattern.name))
+    return sorted(candidates, key=lambda p: (extract_epoch(p, kind), str(p)))
+
+
+def resolve_checkpoint(root, method, seed, epoch):
+    candidates = checkpoint_candidates(root, method, seed, epoch)
+    return candidates[-1] if candidates else None
 
 
 def checkpoint_overrides(items):
@@ -117,8 +143,12 @@ def root_xy(env):
 def infer_skill_dim(policy, obs_dim):
     module = getattr(policy, "_module", None)
     input_dim = getattr(module, "_input_dim", None)
+    if input_dim is None:
+        input_dim = getattr(module, "input_dim", None)
     if input_dim is None and hasattr(module, "module"):
         input_dim = getattr(module.module, "_input_dim", None)
+        if input_dim is None:
+            input_dim = getattr(module.module, "input_dim", None)
     if input_dim is None:
         raise ValueError("Could not infer policy input dimension. Pass a compatible checkpoint.")
     skill_dim = int(input_dim) - int(obs_dim)
@@ -213,6 +243,13 @@ def compute_metrics(records, num_skills, headings):
 
 
 def save_rollouts_npz(path, records):
+    skill_dims = np.asarray([len(r["skill"]) for r in records])
+    max_skill_dim = int(skill_dims.max()) if len(skill_dims) else 0
+    skills = np.full((len(records), max_skill_dim), np.nan, dtype=np.float32)
+    for idx, record in enumerate(records):
+        skill = np.asarray(record["skill"], dtype=np.float32)
+        skills[idx, : len(skill)] = skill
+
     np.savez_compressed(
         path,
         method=np.asarray([r["method"] for r in records]),
@@ -220,7 +257,8 @@ def save_rollouts_npz(path, records):
         rollout_idx=np.asarray([r["rollout_idx"] for r in records]),
         skill_idx=np.asarray([r["skill_idx"] for r in records]),
         theta=np.asarray([r["theta"] for r in records]),
-        skill=np.asarray([r["skill"] for r in records]),
+        skill=skills,
+        skill_dim=skill_dims,
         tau_world=np.asarray([r["tau_world"] for r in records]),
         tau_body=np.asarray([r["tau_body"] for r in records]),
     )
@@ -317,18 +355,21 @@ def main():
 
     for method in args.methods:
         method = method.lower()
-        checkpoint_path = overrides.get(method, default_checkpoint_path(args.checkpoint_root, method))
-        if not checkpoint_path.exists():
-            message = f"[skip] {method}: checkpoint not found at {checkpoint_path}"
-            if args.skip_missing:
-                print(message)
-                continue
-            raise FileNotFoundError(message)
-
-        print(f"[load] {method}: {checkpoint_path}")
-        policy = load_policy(checkpoint_path, device)
-
         for seed in args.seeds:
+            checkpoint_path = overrides.get(method, resolve_checkpoint(args.checkpoint_root, method, seed, args.checkpoint_epoch))
+            if checkpoint_path is None or not checkpoint_path.exists():
+                message = (
+                    f"[skip] {method} seed={seed}: checkpoint not found under "
+                    f"{Path(args.checkpoint_root) / method.upper()} for epoch={args.checkpoint_epoch}"
+                )
+                if args.skip_missing:
+                    print(message)
+                    continue
+                raise FileNotFoundError(message)
+
+            print(f"[load] {method} seed={seed}: {checkpoint_path}")
+            policy = load_policy(checkpoint_path, device)
+
             env = make_env(seed, args.normalize_obs, args.render_hw)
             obs_dim = int(env.observation_space.shape[0])
             skill_dim = infer_skill_dim(policy, obs_dim)

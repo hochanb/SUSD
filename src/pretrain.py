@@ -51,6 +51,7 @@ from garagei.torch.utils import xavier_normal_ex
 from iod.susd import SUSD
 from iod.metra import METRA
 from iod.dads import DADS
+from iod.dads_poe import DADSPoE, DADSPoEPolicyModule
 
 from src.utils import get_exp_name, get_log_dir, make_env, make_q_function
 from src.factorization import get_gaussian_module_construction, factorize_environment, PartitionedTrajectoryEncoder, module_cls_factory, PartitionedTrajectoryEncoderWithInputFactor0
@@ -68,7 +69,23 @@ else:
 # args = SUSDHalfCheetahConfig()
 # args = SUSDGunner()
 # args = SUSDEldenKitchen()
-args = SUSDAntConfig()
+
+
+def _make_pretrain_config():
+    env_name = os.environ.get('SUSD_ENV', 'ant').lower()
+    if env_name == 'ant':
+        return SUSDAntConfig()
+    if env_name in ['half_cheetah', 'half-cheetah', 'halfcheetah']:
+        return SUSDHalfCheetahConfig()
+    if env_name in ['kitchen', 'kitchen_franka', 'franka_kitchen']:
+        return SUSDFrankaKitchenConfig()
+    raise NotImplementedError(
+        f"SUSD_ENV={env_name!r} is not implemented in src/pretrain.py. "
+        "Supported envs: ant, half_cheetah, kitchen."
+    )
+
+
+args = _make_pretrain_config()
 
 
 def _env_override(name, current, cast=str):
@@ -78,24 +95,36 @@ def _env_override(name, current, cast=str):
     return cast(value)
 
 
-def _apply_ant_pretrain_env_overrides(args):
+def _apply_pretrain_env_overrides(args):
     method = os.environ.get('SUSD_TRAIN_METHOD', 'susd').lower()
-    if method not in ['susd', 'metra']:
+    if method not in ['susd', 'metra', 'dads', 'dads_poe']:
         raise NotImplementedError(
             f"SUSD_TRAIN_METHOD={method!r} is not implemented in src/pretrain.py. "
-            "This checkout currently supports Ant pretraining for 'susd' and 'metra'."
+            "This checkout currently supports pretraining for 'susd', 'metra', 'dads', and 'dads_poe'."
         )
 
     args.train_method = method
+    default_env_tag = args.env.upper()
+    if args.env == 'kitchen_franka':
+        default_env_tag = 'KITCHEN'
     if method == 'metra':
-        args.run_group = os.environ.get('SUSD_RUN_GROUP', 'METRA_ANT')
+        args.run_group = os.environ.get('SUSD_RUN_GROUP', f'METRA_{default_env_tag}')
         args.algo = 'metra'
+        args.susd_ablation_mode = 0
+    elif method == 'dads':
+        args.run_group = os.environ.get('SUSD_RUN_GROUP', f'DADS_{default_env_tag}')
+        args.algo = 'dads'
+        args.susd_ablation_mode = 0
+    elif method == 'dads_poe':
+        args.run_group = os.environ.get('SUSD_RUN_GROUP', f'DADS_POE_{default_env_tag}')
+        args.algo = 'dads_poe'
         args.susd_ablation_mode = 0
     else:
         args.run_group = os.environ.get('SUSD_RUN_GROUP', args.run_group)
 
     args.seed = _env_override('SUSD_SEED', args.seed, int)
     args.n_epochs = _env_override('SUSD_N_EPOCHS', args.n_epochs, int)
+    args.max_path_length = _env_override('SUSD_MAX_PATH_LENGTH', args.max_path_length, int)
     args.n_parallel = _env_override('SUSD_N_PARALLEL', args.n_parallel, int)
     args.traj_batch_size = _env_override('SUSD_TRAJ_BATCH_SIZE', args.traj_batch_size, int)
     args.trans_optimization_epochs = _env_override('SUSD_TRANS_OPTIMIZATION_EPOCHS', args.trans_optimization_epochs, int)
@@ -111,7 +140,7 @@ def _apply_ant_pretrain_env_overrides(args):
     return args
 
 
-args = _apply_ant_pretrain_env_overrides(args)
+args = _apply_pretrain_env_overrides(args)
 
 
 @wrap_experiment(log_dir=get_log_dir(args), name=get_exp_name(args)[0])
@@ -233,13 +262,28 @@ def run(ctxt=None):
         init_std=1.,
     ))
 
-    option_dim_for_policy = args.dim_option if getattr(args, 'train_method', 'susd') == 'metra' else args.dim_option * args.N
+    option_dim_for_policy = args.dim_option if (
+        getattr(args, 'train_method', 'susd') == 'metra' or args.algo in ['dads', 'dads_poe']
+    ) else args.dim_option * args.N
     policy_q_input_dim = module_obs_dim + option_dim_for_policy  
-    policy_module = module_cls(
-        input_dim=policy_q_input_dim,
-        output_dim=action_dim,
-        **module_kwargs
-    )
+    if args.algo == 'dads_poe':
+        policy_module = DADSPoEPolicyModule(
+            input_dim=policy_q_input_dim,
+            output_dim=action_dim,
+            dim_option=option_dim_for_policy,
+            num_heads=getattr(args, 'poe_num_heads', 4),
+            hidden_sizes=master_dims,
+            hidden_nonlinearity=nonlinearity or torch.relu,
+            temperature=getattr(args, 'poe_temperature', 1.0),
+            init_std=1.0,
+            max_std=np.exp(2.),
+        )
+    else:
+        policy_module = module_cls(
+            input_dim=policy_q_input_dim,
+            output_dim=action_dim,
+            **module_kwargs
+        )
 
     if args.encoder:
         policy_module = with_encoder(policy_module)
@@ -318,7 +362,7 @@ def run(ctxt=None):
         max_std=10.0,
     )
 
-    if args.algo == 'dads':
+    if args.algo in ['dads', 'dads_poe']:
         skill_dynamics = module_cls(**module_kwargs)
     else:
         skill_dynamics = None
@@ -370,7 +414,7 @@ def run(ctxt=None):
 
     replay_buffer = PathBufferEx(capacity_in_transitions=int(args.sac_max_buffer_size), pixel_shape=pixel_shape)
 
-    if args.algo in ['metra', 'dads']:
+    if args.algo in ['metra', 'dads', 'dads_poe']:
         if args.susd_q_function:
             q1_list = []
             for i in range(args.N):
@@ -487,6 +531,24 @@ def run(ctxt=None):
         susd_ablation_mode = args.susd_ablation_mode
     )
 
+    dads_common_args = dict(
+        qf1=qf1,
+        qf2=qf2,
+        log_alpha=log_alpha,
+        tau=args.sac_tau,
+        scale_reward=args.sac_scale_reward,
+        target_coef=args.sac_target_coef,
+        replay_buffer=replay_buffer,
+        min_buffer_size=args.sac_min_buffer_size,
+        inner=args.inner,
+        num_alt_samples=args.num_alt_samples,
+        split_group=args.split_group,
+        dual_reg=args.dual_reg,
+        dual_slack=args.dual_slack,
+        dual_dist=args.dual_dist,
+        pixel_shape=pixel_shape,
+    )
+
     if getattr(args, 'train_method', 'susd') == 'metra':
         metra_common_args = dict(
             qf1=qf1,
@@ -517,7 +579,16 @@ def run(ctxt=None):
     elif args.algo == 'dads':
         algo = DADS(
             **algo_kwargs,
-            **skill_common_args,
+            **dads_common_args,
+        )
+    elif args.algo == 'dads_poe':
+        algo = DADSPoE(
+            **algo_kwargs,
+            **dads_common_args,
+            poe_head_diversity_coef=getattr(args, 'poe_head_diversity_coef', 0.0),
+            poe_responsibility_coef=getattr(args, 'poe_responsibility_coef', 0.0),
+            poe_entropy_coef=getattr(args, 'poe_entropy_coef', 0.0),
+            poe_head_kl_margin=getattr(args, 'poe_head_kl_margin', 0.5),
         )
     else:
         raise NotImplementedError

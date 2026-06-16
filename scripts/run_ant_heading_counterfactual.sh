@@ -7,16 +7,17 @@ for lib_dir in "$HOME/.mujoco/mujoco210/bin" "/usr/lib/nvidia"; do
   fi
 done
 
-METHODS="${METHODS:-susd metra csd lsd diayn}"
+METHODS="${METHODS:-susd metra dads dads_poe csd lsd diayn}"
 SEEDS="${SEEDS:-0}"
 NUM_SKILLS="${NUM_SKILLS:-16}"
 HORIZON="${HORIZON:-100}"
 NUM_EVAL_ROLLOUTS="${NUM_EVAL_ROLLOUTS:-5}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-final_models/ant}"
+CHECKPOINT_EPOCH="${CHECKPOINT_EPOCH:-latest}"
 OUTPUT_DIR="${OUTPUT_DIR:-results/ant_heading_counterfactual}"
 NORMALIZE_OBS="${NORMALIZE_OBS:-preset}"
 DEVICE="${DEVICE:-auto}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+PYTHON_BIN="${PYTHON_BIN:-/home/hochan/miniconda3/envs/dsd/bin/python}"
 
 if [[ "${DEVICE}" == "auto" ]]; then
   DEVICE_ARG=()
@@ -31,6 +32,7 @@ fi
   --horizon "${HORIZON}" \
   --num-eval-rollouts "${NUM_EVAL_ROLLOUTS}" \
   --checkpoint-root "${CHECKPOINT_ROOT}" \
+  --checkpoint-epoch "${CHECKPOINT_EPOCH}" \
   --output-dir "${OUTPUT_DIR}" \
   --normalize-obs "${NORMALIZE_OBS}" \
   "${DEVICE_ARG[@]}"

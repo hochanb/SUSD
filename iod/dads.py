@@ -1,7 +1,11 @@
 import numpy as np
 import torch
 
+import global_context
+from garage import TrajectoryBatch
+from garagei import log_performance_ex
 from iod.metra import METRA
+from iod.utils import FigManager, get_option_colors
 
 
 class DADS(METRA):
@@ -10,6 +14,58 @@ class DADS(METRA):
             **kwargs,
     ):
         super().__init__(**kwargs)
+
+
+    def _evaluate_policy(self, runner):
+        if self.discrete:
+            eye_options = np.eye(self.dim_option)
+            random_options = []
+            colors = []
+            for i in range(self.dim_option):
+                num_trajs_per_option = self.num_random_trajectories // self.dim_option + (
+                    i < self.num_random_trajectories % self.dim_option
+                )
+                for _ in range(num_trajs_per_option):
+                    random_options.append(eye_options[i])
+                    colors.append(i)
+            random_options = np.array(random_options)
+            colors = np.array(colors)
+            from matplotlib import cm
+            cmap = 'tab10' if self.dim_option <= 10 else 'tab20'
+            random_option_colors = np.array([cm.get_cmap(cmap)(color)[:3] for color in colors])
+        else:
+            random_options = np.random.randn(self.num_random_trajectories, self.dim_option)
+            if self.unit_length:
+                random_options = random_options / np.linalg.norm(random_options, axis=1, keepdims=True)
+            random_option_colors = get_option_colors(random_options * 4)
+
+        random_trajectories = self._get_trajectories(
+            runner,
+            sampler_key='option_policy',
+            extras=self._generate_option_extras(random_options),
+            worker_update=dict(
+                _render=False,
+                _deterministic_policy=True,
+            ),
+            env_update=dict(_action_noise_std=None),
+        )
+
+        with FigManager(runner, 'TrajPlot_RandomZ') as fm:
+            runner._env.render_trajectories(
+                random_trajectories, random_option_colors, self.eval_plot_axis, fm.ax
+            )
+
+        eval_option_metrics = runner._env.calc_eval_metrics(
+            random_trajectories, is_option_trajectories=True
+        )
+        with global_context.GlobalContext({'phase': 'eval', 'policy': 'option'}):
+            log_performance_ex(
+                runner.step_itr,
+                TrajectoryBatch.from_trajectory_list(self._env_spec, random_trajectories),
+                discount=self.discount,
+                additional_records=eval_option_metrics,
+            )
+        self._log_eval_metrics(runner)
 
     def _train_components(self, epoch_data):
         if self.replay_buffer is not None and self.replay_buffer.n_transitions_stored < self.min_buffer_size:
